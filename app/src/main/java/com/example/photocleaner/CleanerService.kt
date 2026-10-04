@@ -12,6 +12,7 @@ import java.io.File
 class CleanerService : Service() {
     @Volatile private var running = false
     private var total = 0
+    private var lastUpdCheck = 0L
     private var lastErr = ""
     private val exts = setOf("jpg", "jpeg", "png", "bmp", "webp")
 
@@ -34,11 +35,34 @@ class CleanerService : Service() {
                 while (running) {
                     val msg = try { clean() } catch (e: Exception) { "error: ${e.message}" }
                     getSystemService(NotificationManager::class.java).notify(1, notif(msg))
+                    if (System.currentTimeMillis() - lastUpdCheck > 3L * 3600 * 1000) { lastUpdCheck = System.currentTimeMillis(); checkUpdate() }
                     try { Thread.sleep(10_000) } catch (_: InterruptedException) {}
                 }
             }.start()
         }
         return START_STICKY
+    }
+
+    // ตรวจเวอร์ชันใหม่ทุก 3 ชั่วโมง แล้วแจ้งเตือน (แจ้งครั้งเดียวต่อเวอร์ชัน)
+    private fun checkUpdate() {
+        try {
+            val latest = Updater.latestVersion() ?: return
+            if (latest <= Updater.currentVersion(this)) return
+            val p = getSharedPreferences("cfg", MODE_PRIVATE)
+            if (p.getLong("notifiedVer", 0) >= latest) return
+            p.edit().putLong("notifiedVer", latest).apply()
+            val nm = getSystemService(NotificationManager::class.java)
+            val nb = if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(NotificationChannel("upd", "อัปเดตแอป", NotificationManager.IMPORTANCE_DEFAULT))
+                Notification.Builder(this, "upd")
+            } else Notification.Builder(this)
+            val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            nm.notify(2, nb.setContentTitle("Photo Cleaner มีเวอร์ชันใหม่ 1.$latest")
+                .setContentText("แตะเพื่อเปิดแอปแล้วกดอัปเดต")
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentIntent(pi).setAutoCancel(true).build())
+        } catch (_: Exception) {}
     }
 
     private fun tryDelete(f: File): Boolean {

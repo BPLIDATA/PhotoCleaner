@@ -11,12 +11,15 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.text.InputType
+import android.os.PowerManager
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import java.io.File
 
 class MainActivity : Activity() {
+    private lateinit var banner: TextView
     private val exts = setOf("jpg", "jpeg", "png", "bmp", "webp")
     private val protectedNames = setOf("dcim", "pictures", "download", "downloads", "documents", "movies", "music", "android")
 
@@ -55,10 +58,19 @@ class MainActivity : Activity() {
             setPadding(24, 14, 24, 14)
             setBackgroundColor(0xFFEEEEEE.toInt())
         }
+        banner = TextView(this).apply {
+            visibility = View.GONE
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setPadding(24, 26, 24, 26)
+            setBackgroundColor(0xFFE65100.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+        }
         val scroll = ScrollView(this).apply { addView(root) }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(banner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(footer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         })
 
@@ -83,6 +95,7 @@ class MainActivity : Activity() {
             val i = Intent(this, CleanerService::class.java)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
             status.text = "สถานะ: ทำงานอยู่"
+            askBattery()
         }
         stop.setOnClickListener {
             p.edit().putBoolean("enabled", false).apply()
@@ -90,6 +103,43 @@ class MainActivity : Activity() {
             status.text = "สถานะ: หยุด"
         }
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Updater.check(this) { latest, url ->
+            if (url == null) {
+                banner.visibility = View.GONE
+            } else {
+                val doUpdate = {
+                    banner.text = "กำลังดาวน์โหลด 1.$latest ..."
+                    Updater.startUpdate(this, url)
+                }
+                banner.text = "⬆ มีเวอร์ชันใหม่ 1.$latest — แตะที่นี่เพื่ออัปเดต"
+                banner.visibility = View.VISIBLE
+                banner.setOnClickListener { doUpdate() }
+                val p = getSharedPreferences("cfg", MODE_PRIVATE)
+                if (p.getLong("askedVer", 0) < latest) {
+                    p.edit().putLong("askedVer", latest).apply()
+                    AlertDialog.Builder(this).setTitle("มีเวอร์ชันใหม่ (1.$latest)")
+                        .setMessage("ต้องการอัปเดตตอนนี้ไหม?\n(ถ้าไว้ทีหลัง จะมีแถบสีส้มด้านล่างให้กดอัปเดตได้)")
+                        .setPositiveButton("อัปเดต") { _, _ -> doUpdate() }
+                        .setNegativeButton("ไว้ทีหลัง", null).show()
+                }
+            }
+        }
+    }
+
+    // ขอยกเว้นการประหยัดแบตเตอรี่ เพื่อไม่ให้ระบบปิดงานลบรูปในพื้นหลัง
+    private fun askBattery() {
+        if (Build.VERSION.SDK_INT >= 23) {
+            val pm = getSystemService(PowerManager::class.java)
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun search(name: String, onPick: (String) -> Unit) {

@@ -9,10 +9,7 @@ class App : Application() {
         super.onCreate()
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityCreated(a: Activity, s: Bundle?) {
-                if (a is MainActivity) {
-                    a.title = "Photo Cleaner v${Updater.currentVersion(a)}"
-                    if (s == null) Updater.check(a, true)
-                }
+                if (a is MainActivity) a.title = "Photo Cleaner v${Updater.versionName(a)}"
             }
             override fun onActivityStarted(a: Activity) {}
             override fun onActivityResumed(a: Activity) {}

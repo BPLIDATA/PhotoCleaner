@@ -1,54 +1,51 @@
 package com.example.photocleaner
 
 import android.app.Activity
-import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.FileProvider
-import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
 object Updater {
     private const val REPO = "BPLIDATA/PhotoCleaner"
+    private const val APK_URL = "https://github.com/$REPO/releases/latest/download/PhotoCleaner.apk"
 
-    fun currentVersion(a: Activity): Long {
-        val i = a.packageManager.getPackageInfo(a.packageName, 0)
+    fun currentVersion(c: Context): Long {
+        val i = c.packageManager.getPackageInfo(c.packageName, 0)
         return if (Build.VERSION.SDK_INT >= 28) i.longVersionCode else i.versionCode.toLong()
     }
 
+    fun versionName(c: Context): String =
+        try { c.packageManager.getPackageInfo(c.packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
+
     private fun toast(a: Activity, t: String) = Toast.makeText(a, t, Toast.LENGTH_LONG).show()
 
-    fun check(a: Activity, silent: Boolean) {
+    // เลขเวอร์ชันล่าสุดจากหน้า Release (ไม่ใช้ API จึงไม่ติดลิมิต) ตรวจไม่ได้ = null ; เรียกจากเธรดพื้นหลังเท่านั้น
+    fun latestVersion(): Long? = try {
+        val c = URL("https://github.com/$REPO/releases/latest").openConnection() as HttpURLConnection
+        c.instanceFollowRedirects = false
+        c.connectTimeout = 10000; c.readTimeout = 10000
+        c.getHeaderField("Location")?.substringAfterLast("/tag/")?.removePrefix("v")?.trim()?.toLong()
+    } catch (e: Exception) { null }
+
+    // onResult(latest, url): url = null ถ้าเป็นเวอร์ชันล่าสุดแล้ว ; ตรวจไม่ได้จะไม่เรียกอะไร
+    fun check(a: Activity, onResult: (Long, String?) -> Unit) {
         Thread {
-            try {
-                val c = URL("https://api.github.com/repos/$REPO/releases/latest").openConnection() as HttpURLConnection
-                c.connectTimeout = 10000; c.readTimeout = 10000
-                val j = JSONObject(c.inputStream.bufferedReader().readText())
-                val latest = j.getString("tag_name").removePrefix("v").toLong()
-                val url = j.getJSONArray("assets").getJSONObject(0).getString("browser_download_url")
-                a.runOnUiThread {
-                    if (latest > currentVersion(a)) {
-                        AlertDialog.Builder(a).setTitle("มีเวอร์ชันใหม่ (v$latest)")
-                            .setMessage("ต้องการอัปเดตตอนนี้ไหม?")
-                            .setPositiveButton("อัปเดต") { _, _ -> download(a, url) }
-                            .setNegativeButton("ไว้ทีหลัง", null).show()
-                    } else if (!silent) toast(a, "เป็นเวอร์ชันล่าสุดแล้ว")
-                }
-            } catch (e: Exception) {
-                if (!silent) a.runOnUiThread { toast(a, "ตรวจอัปเดตไม่สำเร็จ: ${e.message}") }
-            }
+            val latest = latestVersion() ?: return@Thread
+            a.runOnUiThread { onResult(latest, if (latest > currentVersion(a)) APK_URL else null) }
         }.start()
     }
 
-    private fun download(a: Activity, url: String) {
+    fun startUpdate(a: Activity, url: String) {
         if (Build.VERSION.SDK_INT >= 26 && !a.packageManager.canRequestPackageInstalls()) {
             a.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${a.packageName}")))
-            toast(a, "อนุญาตให้ติดตั้งแอปจากแหล่งนี้ แล้วเปิดแอปใหม่เพื่ออัปเดตอีกครั้ง")
+            toast(a, "อนุญาตให้ติดตั้งแอปจากแหล่งนี้ แล้วกลับมาแตะแถบอัปเดตอีกครั้ง")
             return
         }
         toast(a, "กำลังดาวน์โหลด...")
