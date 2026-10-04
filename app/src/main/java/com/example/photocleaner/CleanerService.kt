@@ -1,7 +1,17 @@
 package com.example.photocleaner
 
 import android.app.*
+import android.content.Context
 import android.content.Intent
+import android.graphics.PixelFormat
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.WindowManager
+import android.widget.ImageView
+import kotlin.math.abs
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
@@ -10,6 +20,12 @@ import android.provider.MediaStore
 import java.io.File
 
 class CleanerService : Service() {
+    companion object {
+        @Volatile var appVisible = false
+        @Volatile var instance: CleanerService? = null
+    }
+    private var bubble: ImageView? = null
+    private val ui = Handler(Looper.getMainLooper())
     @Volatile private var running = false
     private var total = 0
     private var lastUpdCheck = 0L
@@ -29,6 +45,8 @@ class CleanerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(1, notif("เริ่มทำงาน..."))
+        instance = this
+        showBubble(!appVisible)
         if (!running) {
             running = true
             Thread {
@@ -111,6 +129,52 @@ class CleanerService : Service() {
         return msg
     }
 
-    override fun onDestroy() { running = false; super.onDestroy() }
+    // ไอคอนลอย: แสดงเมื่อไม่ได้เปิดหน้าแอปอยู่ แตะเพื่อกลับเข้าแอป ลากเพื่อย้ายตำแหน่ง
+    fun showBubble(show: Boolean) {
+        ui.post {
+            if (!show) { removeBubble(); return@post }
+            if (bubble != null) return@post
+            if (!getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("bubble", false)) return@post
+            if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) return@post
+            try {
+                val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                val size = (56 * resources.displayMetrics.density).toInt()
+                @Suppress("DEPRECATION")
+                val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                           else WindowManager.LayoutParams.TYPE_PHONE
+                val lp = WindowManager.LayoutParams(size, size, type,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT)
+                lp.gravity = Gravity.TOP or Gravity.START
+                lp.x = 20; lp.y = 300
+                val v = ImageView(this)
+                v.setImageResource(R.mipmap.ic_launcher_round)
+                var sx = 0; var sy = 0; var tx = 0f; var ty = 0f; var moved = false
+                v.setOnTouchListener { _, e ->
+                    when (e.action) {
+                        MotionEvent.ACTION_DOWN -> { sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY; moved = false }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = (e.rawX - tx).toInt(); val dy = (e.rawY - ty).toInt()
+                            if (abs(dx) > 10 || abs(dy) > 10) moved = true
+                            if (moved) { lp.x = sx + dx; lp.y = sy + dy; wm.updateViewLayout(v, lp) }
+                        }
+                        MotionEvent.ACTION_UP -> if (!moved)
+                            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                    true
+                }
+                wm.addView(v, lp)
+                bubble = v
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun removeBubble() {
+        bubble?.let {
+            try { (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+        }
+        bubble = null
+    }
+
+    override fun onDestroy() { running = false; instance = null; removeBubble(); super.onDestroy() }
     override fun onBind(i: Intent?): IBinder? = null
 }

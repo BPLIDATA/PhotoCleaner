@@ -39,6 +39,14 @@ class MainActivity : Activity() {
         val status = TextView(this).apply { text = if (p.getBoolean("enabled", false)) "สถานะ: ทำงานอยู่" else "สถานะ: หยุด" }
         val start = Button(this).apply { text = "เริ่มทำงาน (พื้นหลัง)" }
         val stop = Button(this).apply { text = "หยุด" }
+        val bubbleCb = CheckBox(this).apply { text = "แสดงไอคอนลอยเมื่อย่อแอป (แตะเพื่อกลับเข้าแอป)"; isChecked = p.getBoolean("bubble", false) }
+        bubbleCb.setOnCheckedChangeListener { _, on ->
+            p.edit().putBoolean("bubble", on).apply()
+            if (on && Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+                Toast.makeText(this, "เปิดสวิตช์ \"แสดงทับแอปอื่น\" ให้ Photo Cleaner แล้วกลับมา", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            }
+        }
         val delName = EditText(this).apply { hint = "ชื่อโฟลเดอร์ที่จะลบ เช่น Screenshots" }
         val delBtn = Button(this).apply { text = "ค้นหาแล้วลบทั้งโฟลเดอร์" }
 
@@ -46,7 +54,7 @@ class MainActivity : Activity() {
         root.addView(path); root.addView(find)
         root.addView(label("ลบทุกกี่รูป (เช่น 1000)")); root.addView(n)
         root.addView(label("เลือกรูปที่จะลบ")); root.addView(grp)
-        root.addView(start); root.addView(stop); root.addView(status)
+        root.addView(start); root.addView(stop); root.addView(bubbleCb); root.addView(status)
         root.addView(label("──────── ลบทั้งโฟลเดอร์ (ถาวร) ────────"))
         root.addView(delName); root.addView(delBtn)
 
@@ -107,6 +115,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        CleanerService.appVisible = true
+        CleanerService.instance?.showBubble(false)
         Updater.check(this) { latest, url ->
             if (url == null) {
                 banner.visibility = View.GONE
@@ -128,6 +138,12 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        CleanerService.appVisible = false
+        CleanerService.instance?.showBubble(true)
     }
 
     // ขอยกเว้นการประหยัดแบตเตอรี่ เพื่อไม่ให้ระบบปิดงานลบรูปในพื้นหลัง
