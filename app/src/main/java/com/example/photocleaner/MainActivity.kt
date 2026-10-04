@@ -11,6 +11,8 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.text.InputType
+import android.view.Gravity
+import android.view.ViewGroup
 import android.widget.*
 import java.io.File
 
@@ -44,7 +46,21 @@ class MainActivity : Activity() {
         root.addView(start); root.addView(stop); root.addView(status)
         root.addView(label("──────── ลบทั้งโฟลเดอร์ (ถาวร) ────────"))
         root.addView(delName); root.addView(delBtn)
-        setContentView(ScrollView(this).apply { addView(root) })
+
+        val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
+        val footer = TextView(this).apply {
+            text = "เวอร์ชัน $ver  |  พัฒนาโดย ธนพงษ์ คิดประเสริฐ"
+            textSize = 12f
+            gravity = Gravity.END
+            setPadding(24, 14, 24, 14)
+            setBackgroundColor(0xFFEEEEEE.toInt())
+        }
+        val scroll = ScrollView(this).apply { addView(root) }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(footer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        })
 
         find.setOnClickListener {
             val name = path.text.toString().trim().trimEnd('/').substringAfterLast('/')
@@ -76,7 +92,6 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
     }
 
-    // ค้นหาโฟลเดอร์จากชื่อ แล้วแสดงรายการพร้อมจำนวนรูป เลือกแล้วเรียก onPick(path)
     private fun search(name: String, onPick: (String) -> Unit) {
         if (name.isEmpty()) { Toast.makeText(this, "พิมพ์ชื่อโฟลเดอร์ก่อน", Toast.LENGTH_SHORT).show(); return }
         if (!hasAccess()) { askAccess(); return }
