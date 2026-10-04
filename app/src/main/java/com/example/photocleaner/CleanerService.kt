@@ -12,6 +12,7 @@ import java.io.File
 class CleanerService : Service() {
     @Volatile private var running = false
     private var total = 0
+    private var lastErr = ""
     private val exts = setOf("jpg", "jpeg", "png", "bmp", "webp")
 
     private fun notif(text: String): Notification {
@@ -42,12 +43,16 @@ class CleanerService : Service() {
 
     private fun tryDelete(f: File): Boolean {
         if (f.delete()) return true
+        if (Build.VERSION.SDK_INT >= 26) {
+            try { java.nio.file.Files.delete(f.toPath()); return true }
+            catch (e: Exception) { lastErr = "${e.javaClass.simpleName}: ${e.message}" }
+        }
         try {
             contentResolver.delete(
                 MediaStore.Files.getContentUri("external"),
                 MediaStore.MediaColumns.DATA + "=?", arrayOf(f.absolutePath)
             )
-        } catch (_: Exception) {}
+        } catch (e: Exception) { lastErr += " | MS: ${e.javaClass.simpleName}" }
         return !f.exists()
     }
 
@@ -77,6 +82,7 @@ class CleanerService : Service() {
         if (fail > 0 && firstFail != null) {
             val allFiles = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager().toString() else "n/a"
             msg += "\nAPI=${Build.VERSION.SDK_INT} allFiles=$allFiles canWrite=${firstFail.canWrite()} dirWrite=${dir.canWrite()}"
+            msg += "\n$lastErr"
         }
         return msg
     }
