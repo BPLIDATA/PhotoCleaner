@@ -8,8 +8,10 @@ import android.os.Build
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         if (c.getSharedPreferences("cfg", Context.MODE_PRIVATE).getBoolean("enabled", false)) {
-            val s = Intent(c, CleanerService::class.java)
-            if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(s) else c.startService(s)
+            try {
+                val s = Intent(c, CleanerService::class.java)
+                if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(s) else c.startService(s)
+            } catch (_: Exception) {}
         }
     }
 }

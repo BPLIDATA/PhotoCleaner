@@ -1,8 +1,14 @@
 plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+def runNo = (System.getenv("RUN_NUMBER") ?: "1").toInteger()
 android {
     namespace 'com.example.photocleaner'
     compileSdk 34
-    defaultConfig { applicationId "com.example.photocleaner"; minSdk 24; targetSdk 33; versionCode 1; versionName "1.0" }
+    signingConfigs {
+        fixed { storeFile file("../photocleaner.keystore"); storePassword "photocleaner"; keyAlias "photocleaner"; keyPassword "photocleaner" }
+    }
+    defaultConfig { applicationId "com.example.photocleaner"; minSdk 24; targetSdk 33; versionCode runNo; versionName "1.${runNo}" }
+    buildTypes { debug { signingConfig signingConfigs.fixed } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = '17' }
 }
+dependencies { implementation 'androidx.core:core-ktx:1.12.0' }
