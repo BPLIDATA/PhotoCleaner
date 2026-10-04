@@ -4,7 +4,9 @@ import android.app.*
 import android.content.Intent
 import android.media.MediaScannerConnection
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
+import android.provider.MediaStore
 import java.io.File
 
 class CleanerService : Service() {
@@ -38,6 +40,17 @@ class CleanerService : Service() {
         return START_STICKY
     }
 
+    private fun tryDelete(f: File): Boolean {
+        if (f.delete()) return true
+        try {
+            contentResolver.delete(
+                MediaStore.Files.getContentUri("external"),
+                MediaStore.MediaColumns.DATA + "=?", arrayOf(f.absolutePath)
+            )
+        } catch (_: Exception) {}
+        return !f.exists()
+    }
+
     private fun clean(): String {
         val p = getSharedPreferences("cfg", MODE_PRIVATE)
         val n = p.getInt("n", 1000)
@@ -52,14 +65,20 @@ class CleanerService : Service() {
         val sorted = if (newest) files.sortedByDescending { it.lastModified() } else files.sortedBy { it.lastModified() }
         val deleted = ArrayList<String>()
         var fail = 0
+        var firstFail: File? = null
         for (f in sorted.take(n)) {
             if (now - f.lastModified() < 5000) continue
-            if (f.delete()) deleted.add(f.absolutePath) else fail++
+            if (tryDelete(f)) deleted.add(f.absolutePath) else { fail++; if (firstFail == null) firstFail = f }
         }
         total += deleted.size
         if (deleted.isNotEmpty())
             MediaScannerConnection.scanFile(this, deleted.toTypedArray(), null, null)
-        return "ลบรอบนี้ ${deleted.size} ล้มเหลว $fail ลบสะสม $total\n$path"
+        var msg = "ลบรอบนี้ ${deleted.size} ล้มเหลว $fail ลบสะสม $total\n$path"
+        if (fail > 0 && firstFail != null) {
+            val allFiles = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager().toString() else "n/a"
+            msg += "\nAPI=${Build.VERSION.SDK_INT} allFiles=$allFiles canWrite=${firstFail.canWrite()} dirWrite=${dir.canWrite()}"
+        }
+        return msg
     }
 
     override fun onDestroy() { running = false; super.onDestroy() }
