@@ -105,11 +105,15 @@ class CleanerService : Service() {
         val path = p.getString("path", "") ?: ""
         val dir = File(path)
         if (!dir.isDirectory) return "ไม่พบโฟลเดอร์: $path"
+        val names = dir.list() ?: return "อ่านโฟลเดอร์ไม่ได้ (ไม่มีสิทธิ์?): $path"
+        val count = names.count { it.substringAfterLast('.', "").lowercase() in exts }
+        if (count <= n) return "พบ $count รูป (จะลบเมื่อเกิน $n) ลบสะสม $total\n$path"
         val files = dir.listFiles { f -> f.isFile && f.extension.lowercase() in exts }
             ?: return "อ่านโฟลเดอร์ไม่ได้ (ไม่มีสิทธิ์?): $path"
-        if (files.size <= n) return "พบ ${files.size} รูป (จะลบเมื่อเกิน $n) ลบสะสม $total\n$path"
         val now = System.currentTimeMillis()
-        val sorted = if (newest) files.sortedByDescending { it.lastModified() } else files.sortedBy { it.lastModified() }
+        // อ่านเวลาแก้ไขของแต่ละไฟล์แค่ครั้งเดียว (เดิมอ่านซ้ำหลายล้านครั้งตอนจัดเรียง ช้ามากเมื่อรูปเป็นหมื่น)
+        val stamped = files.map { Pair(it, it.lastModified()) }
+        val sorted = (if (newest) stamped.sortedByDescending { it.second } else stamped.sortedBy { it.second }).map { it.first }
         val deleted = ArrayList<String>()
         var fail = 0
         var firstFail: File? = null
@@ -118,6 +122,8 @@ class CleanerService : Service() {
             if (tryDelete(f)) deleted.add(f.absolutePath) else { fail++; if (firstFail == null) firstFail = f }
         }
         total += deleted.size
+        p.edit().putLong("totDel", p.getLong("totDel", 0) + deleted.size)
+            .putLong("totFail", p.getLong("totFail", 0) + fail).apply()
         if (deleted.isNotEmpty())
             MediaScannerConnection.scanFile(this, deleted.toTypedArray(), null, null)
         var msg = "ลบรอบนี้ ${deleted.size} ล้มเหลว $fail ลบสะสม $total\n$path"

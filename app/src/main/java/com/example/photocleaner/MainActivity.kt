@@ -11,6 +11,8 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.text.InputType
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.view.Gravity
 import android.view.View
@@ -20,6 +22,11 @@ import java.io.File
 
 class MainActivity : Activity() {
     private lateinit var banner: TextView
+    private lateinit var statsTv: TextView
+    private val h = Handler(Looper.getMainLooper())
+    private val tick = object : Runnable {
+        override fun run() { refreshStats(); h.postDelayed(this, 2000) }
+    }
     private val exts = setOf("jpg", "jpeg", "png", "bmp", "webp")
     private val protectedNames = setOf("dcim", "pictures", "download", "downloads", "documents", "movies", "music", "android")
 
@@ -59,12 +66,30 @@ class MainActivity : Activity() {
         root.addView(delName); root.addView(delBtn)
 
         val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
-        val footer = TextView(this).apply {
+        val verTv = TextView(this).apply {
             text = "เวอร์ชัน $ver  |  พัฒนาโดย ธนพงษ์ คิดประเสริฐ"
             textSize = 12f
             gravity = Gravity.END
+        }
+        statsTv = TextView(this).apply {
+            textSize = 13f
+            gravity = Gravity.START
+            setTextColor(0xFF2E7D32.toInt())
+            setOnLongClickListener {
+                AlertDialog.Builder(this@MainActivity).setMessage("รีเซ็ตตัวเลข ลบแล้ว/ล้มเหลว เป็น 0 ?")
+                    .setPositiveButton("รีเซ็ต") { _, _ ->
+                        getSharedPreferences("cfg", MODE_PRIVATE).edit().putLong("totDel", 0).putLong("totFail", 0).apply()
+                        refreshStats()
+                    }.setNegativeButton("ยกเลิก", null).show()
+                true
+            }
+        }
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(24, 14, 24, 14)
             setBackgroundColor(0xFFEEEEEE.toInt())
+            addView(verTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(statsTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         banner = TextView(this).apply {
             visibility = View.GONE
@@ -84,11 +109,11 @@ class MainActivity : Activity() {
 
         find.setOnClickListener {
             val name = path.text.toString().trim().trimEnd('/').substringAfterLast('/')
-            search(name) { path.setText(it) }
+            search(name, find) { path.setText(it) }
         }
         delBtn.setOnClickListener {
             val name = delName.text.toString().trim().trimEnd('/').substringAfterLast('/')
-            search(name) { confirmDelete(File(it)) }
+            search(name, delBtn) { confirmDelete(File(it)) }
         }
 
         start.setOnClickListener {
@@ -113,10 +138,16 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
     }
 
+    private fun refreshStats() {
+        val p = getSharedPreferences("cfg", MODE_PRIVATE)
+        statsTv.text = String.format(java.util.Locale.US, "ลบแล้ว %,d รูป | ล้มเหลว %,d", p.getLong("totDel", 0), p.getLong("totFail", 0))
+    }
+
     override fun onResume() {
         super.onResume()
         CleanerService.appVisible = true
         CleanerService.instance?.showBubble(false)
+        h.removeCallbacks(tick); h.post(tick)
         Updater.check(this) { latest, url ->
             if (url == null) {
                 banner.visibility = View.GONE
@@ -144,6 +175,7 @@ class MainActivity : Activity() {
         super.onPause()
         CleanerService.appVisible = false
         CleanerService.instance?.showBubble(true)
+        h.removeCallbacks(tick)
     }
 
     // ขอยกเว้นการประหยัดแบตเตอรี่ เพื่อไม่ให้ระบบปิดงานลบรูปในพื้นหลัง
@@ -158,23 +190,47 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun search(name: String, onPick: (String) -> Unit) {
+    private fun search(name: String, btn: Button, onPick: (String) -> Unit) {
         if (name.isEmpty()) { Toast.makeText(this, "พิมพ์ชื่อโฟลเดอร์ก่อน", Toast.LENGTH_SHORT).show(); return }
         if (!hasAccess()) { askAccess(); return }
-        Toast.makeText(this, "กำลังค้นหา...", Toast.LENGTH_SHORT).show()
+        val oldText = btn.text
+        btn.text = "⏳ กำลังค้นหา..."
+        btn.isEnabled = false
         Thread {
             val found = ArrayList<String>()
-            val roots = ArrayList<File>()
-            roots.add(Environment.getExternalStorageDirectory())
-            File("/storage").listFiles()?.filter { it.isDirectory && it.name != "emulated" && it.name != "self" }?.let { roots.addAll(it) }
-            for (r in roots) findDirs(r, name, 0, found)
+            var err: String? = null
+            try {
+                val deadline = System.currentTimeMillis() + 10_000
+                val base = Environment.getExternalStorageDirectory()
+                for (sub in listOf("", "DCIM", "Pictures", "Download", "Documents")) {
+                    val d = if (sub.isEmpty()) File(base, name) else File(File(base, sub), name)
+                    if (d.isDirectory && d.absolutePath !in found) found.add(d.absolutePath)
+                }
+                val roots = ArrayList<File>()
+                roots.add(base)
+                File("/storage").list()?.filter { it != "emulated" && it != "self" }?.forEach { roots.add(File("/storage/$it")) }
+                for (r in roots) findDirs(r, name, 0, found, deadline)
+            } catch (e: Exception) { err = e.message ?: e.javaClass.simpleName }
             runOnUiThread {
-                if (found.isEmpty()) {
-                    Toast.makeText(this, "ไม่พบโฟลเดอร์ชื่อ $name", Toast.LENGTH_LONG).show()
+                btn.text = oldText
+                btn.isEnabled = true
+                if (err != null) {
+                    AlertDialog.Builder(this).setTitle("ค้นหาไม่สำเร็จ").setMessage(err).setPositiveButton("ตกลง", null).show()
+                } else if (found.isEmpty()) {
+                    AlertDialog.Builder(this).setTitle("ไม่พบโฟลเดอร์")
+                        .setMessage("ไม่พบโฟลเดอร์ชื่อ \"$name\"").setPositiveButton("ตกลง", null).show()
                 } else {
-                    val items = found.map { "$it  (${countImages(File(it))} รูป)" }.toTypedArray()
+                    // แสดงรายการทันที แล้วค่อยๆ เติมจำนวนรูปทีละโฟลเดอร์ (โฟลเดอร์ใหญ่ไม่ต้องรอ)
+                    val labels = ArrayList(found.map { "$it  (กำลังนับรูป...)" })
+                    val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
                     AlertDialog.Builder(this).setTitle("เลือกโฟลเดอร์")
-                        .setItems(items) { _, i -> onPick(found[i]) }.show()
+                        .setAdapter(adapter) { _, i -> onPick(found[i]) }.show()
+                    Thread {
+                        for (k in found.indices) {
+                            val c = countImages(File(found[k]))
+                            runOnUiThread { labels[k] = "${found[k]}  ($c รูป)"; adapter.notifyDataSetChanged() }
+                        }
+                    }.start()
                 }
             }
         }.start()
@@ -187,6 +243,8 @@ class MainActivity : Activity() {
                 .setPositiveButton("ตกลง", null).show()
             return
         }
+        val wait = AlertDialog.Builder(this).setMessage("กำลังนับไฟล์ในโฟลเดอร์ ... (ถ้ามีไฟล์เยอะอาจใช้เวลาสักครู่)").create()
+        wait.show()
         Thread {
             var imgs = 0; var all = 0; var bytes = 0L
             dir.walkTopDown().filter { it.isFile }.forEach {
@@ -194,6 +252,7 @@ class MainActivity : Activity() {
                 if (it.extension.lowercase() in exts) imgs++
             }
             runOnUiThread {
+                try { wait.dismiss() } catch (_: Exception) {}
                 AlertDialog.Builder(this).setTitle("ยืนยันลบทั้งโฟลเดอร์?")
                     .setMessage("${dir.absolutePath}\n\nรูปภาพ $imgs รูป\nไฟล์ทั้งหมด $all ไฟล์ (${bytes / 1024 / 1024} MB)\n\nลบถาวร กู้คืนไม่ได้")
                     .setPositiveButton("ลบเลย") { _, _ -> doDelete(dir) }
@@ -203,13 +262,15 @@ class MainActivity : Activity() {
     }
 
     private fun doDelete(dir: File) {
-        Toast.makeText(this, "กำลังลบ...", Toast.LENGTH_SHORT).show()
+        val wait = AlertDialog.Builder(this).setMessage("กำลังลบ ... อย่าปิดแอป (ไฟล์เยอะอาจใช้เวลาสักครู่)").setCancelable(false).create()
+        wait.show()
         Thread {
             val paths = dir.walkTopDown().filter { it.isFile }.map { it.absolutePath }.toList()
             dir.deleteRecursively()
             val left = if (dir.exists()) dir.walkTopDown().count { it.isFile } else 0
             if (paths.isNotEmpty()) MediaScannerConnection.scanFile(this, paths.toTypedArray(), null, null)
             runOnUiThread {
+                try { wait.dismiss() } catch (_: Exception) {}
                 val msg = if (!dir.exists()) "ลบโฟลเดอร์เรียบร้อย (${paths.size} ไฟล์)"
                 else "ลบไม่หมด เหลือ $left ไฟล์ (ลบแล้ว ${paths.size - left})"
                 AlertDialog.Builder(this).setTitle("ผลการลบ").setMessage(msg).setPositiveButton("ตกลง", null).show()
@@ -224,16 +285,19 @@ class MainActivity : Activity() {
         return parent == base && d.name.lowercase() in protectedNames
     }
 
-    private fun findDirs(dir: File, name: String, depth: Int, out: MutableList<String>) {
-        if (depth > 5 || out.size >= 20) return
-        val subs = dir.listFiles { f -> f.isDirectory && !f.name.startsWith(".") } ?: return
-        for (d in subs) {
-            if (d.name.equals(name, true)) out.add(d.absolutePath)
-            if (d.name != "Android") findDirs(d, name, depth + 1, out)
+    private fun findDirs(dir: File, name: String, depth: Int, out: MutableList<String>, deadline: Long) {
+        if (depth > 3 || out.size >= 20 || System.currentTimeMillis() > deadline) return
+        val names = dir.list() ?: return
+        for (nm in names) {
+            if (nm.contains('.') || nm == "Android") continue   // ข้ามไฟล์/โฟลเดอร์ซ่อน เพื่อความเร็ว
+            val d = File(dir, nm)
+            if (!d.isDirectory) continue
+            if (nm.equals(name, true) && d.absolutePath !in out) out.add(d.absolutePath)
+            findDirs(d, name, depth + 1, out, deadline)
         }
     }
 
-    private fun countImages(d: File) = d.listFiles { f -> f.isFile && f.extension.lowercase() in exts }?.size ?: 0
+    private fun countImages(d: File) = d.list()?.count { it.substringAfterLast('.', "").lowercase() in exts } ?: 0
 
     private fun hasAccess() =
         if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
