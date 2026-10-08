@@ -12,7 +12,6 @@ import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.ImageView
 import kotlin.math.abs
-import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
@@ -29,6 +28,7 @@ class CleanerService : Service() {
     @Volatile private var running = false
     private var total = 0
     private var lastUpdCheck = 0L
+    private var lastRun = ""
     private var lastErr = ""
     private val exts = setOf("jpg", "jpeg", "png", "bmp", "webp")
 
@@ -107,13 +107,14 @@ class CleanerService : Service() {
         if (!dir.isDirectory) return "ไม่พบโฟลเดอร์: $path"
         val names = dir.list() ?: return "อ่านโฟลเดอร์ไม่ได้ (ไม่มีสิทธิ์?): $path"
         val count = names.count { it.substringAfterLast('.', "").lowercase() in exts }
-        if (count <= n) return "พบ $count รูป (จะลบเมื่อเกิน $n) ลบสะสม $total\n$path"
+        if (count <= n) return "พบ $count รูป (จะลบเมื่อเกิน $n) ลบสะสม $total\n$path" + (if (lastRun.isEmpty()) "" else "\n$lastRun")
         val files = dir.listFiles { f -> f.isFile && f.extension.lowercase() in exts }
             ?: return "อ่านโฟลเดอร์ไม่ได้ (ไม่มีสิทธิ์?): $path"
         val now = System.currentTimeMillis()
         // อ่านเวลาแก้ไขของแต่ละไฟล์แค่ครั้งเดียว (เดิมอ่านซ้ำหลายล้านครั้งตอนจัดเรียง ช้ามากเมื่อรูปเป็นหมื่น)
         val stamped = files.map { Pair(it, it.lastModified()) }
         val sorted = (if (newest) stamped.sortedByDescending { it.second } else stamped.sortedBy { it.second }).map { it.first }
+        val t0 = System.currentTimeMillis()
         val deleted = ArrayList<String>()
         var fail = 0
         var firstFail: File? = null
@@ -124,9 +125,9 @@ class CleanerService : Service() {
         total += deleted.size
         p.edit().putLong("totDel", p.getLong("totDel", 0) + deleted.size)
             .putLong("totFail", p.getLong("totFail", 0) + fail).apply()
-        if (deleted.isNotEmpty())
-            MediaScannerConnection.scanFile(this, deleted.toTypedArray(), null, null)
-        var msg = "ลบรอบนี้ ${deleted.size} ล้มเหลว $fail ลบสะสม $total\n$path"
+        val secs = String.format(java.util.Locale.US, "%.1f", (System.currentTimeMillis() - t0) / 1000.0)
+        lastRun = "ล่าสุด: ลบ ${deleted.size} รูป ใช้ $secs วินาที"
+        var msg = "ลบรอบนี้ ${deleted.size} ล้มเหลว $fail ใช้ $secs วินาที | ลบสะสม $total\n$path"
         if (fail > 0 && firstFail != null) {
             val allFiles = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager().toString() else "n/a"
             msg += "\nAPI=${Build.VERSION.SDK_INT} allFiles=$allFiles canWrite=${firstFail.canWrite()} dirWrite=${dir.canWrite()}"

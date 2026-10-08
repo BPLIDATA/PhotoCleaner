@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -27,6 +26,7 @@ class MainActivity : Activity() {
     private val tick = object : Runnable {
         override fun run() { refreshStats(); h.postDelayed(this, 2000) }
     }
+    private val autoNames = setOf("success", "fail")
     private val exts = setOf("jpg", "jpeg", "png", "bmp", "webp")
     private val protectedNames = setOf("dcim", "pictures", "download", "downloads", "documents", "movies", "music", "android")
 
@@ -56,6 +56,7 @@ class MainActivity : Activity() {
         }
         val delName = EditText(this).apply { hint = "ชื่อโฟลเดอร์ที่จะลบ เช่น Screenshots" }
         val delBtn = Button(this).apply { text = "ค้นหาแล้วลบทั้งโฟลเดอร์" }
+        val autoBtn = Button(this).apply { text = "ลบโฟลเดอร์ success + fail ทั้งหมด" }
 
         root.addView(label("โฟลเดอร์รูปที่สแกน (พิมพ์ path เต็ม หรือพิมพ์ชื่อแล้วกดค้นหา) ระวัง! ลบถาวร"))
         root.addView(path); root.addView(find)
@@ -63,7 +64,7 @@ class MainActivity : Activity() {
         root.addView(label("เลือกรูปที่จะลบ")); root.addView(grp)
         root.addView(start); root.addView(stop); root.addView(bubbleCb); root.addView(status)
         root.addView(label("──────── ลบทั้งโฟลเดอร์ (ถาวร) ────────"))
-        root.addView(delName); root.addView(delBtn)
+        root.addView(delName); root.addView(delBtn); root.addView(autoBtn)
 
         val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
         val verTv = TextView(this).apply {
@@ -115,6 +116,7 @@ class MainActivity : Activity() {
             val name = delName.text.toString().trim().trimEnd('/').substringAfterLast('/')
             search(name, delBtn) { confirmDelete(File(it)) }
         }
+        autoBtn.setOnClickListener { deleteAutoFolders(autoBtn) }
 
         start.setOnClickListener {
             val v = n.text.toString().toIntOrNull() ?: 0
@@ -148,6 +150,7 @@ class MainActivity : Activity() {
         CleanerService.appVisible = true
         CleanerService.instance?.showBubble(false)
         h.removeCallbacks(tick); h.post(tick)
+        if (TrashService.hasPending(this)) TrashService.start(this)   // ลบต่อจากครั้งก่อนที่ค้างอยู่
         Updater.check(this) { latest, url ->
             if (url == null) {
                 banner.visibility = View.GONE
@@ -246,36 +249,116 @@ class MainActivity : Activity() {
         val wait = AlertDialog.Builder(this).setMessage("กำลังนับไฟล์ในโฟลเดอร์ ... (ถ้ามีไฟล์เยอะอาจใช้เวลาสักครู่)").create()
         wait.show()
         Thread {
-            var imgs = 0; var all = 0; var bytes = 0L
-            dir.walkTopDown().filter { it.isFile }.forEach {
-                all++; bytes += it.length()
-                if (it.extension.lowercase() in exts) imgs++
-            }
+            val (imgs, all) = countAll(dir)
             runOnUiThread {
                 try { wait.dismiss() } catch (_: Exception) {}
                 AlertDialog.Builder(this).setTitle("ยืนยันลบทั้งโฟลเดอร์?")
-                    .setMessage("${dir.absolutePath}\n\nรูปภาพ $imgs รูป\nไฟล์ทั้งหมด $all ไฟล์ (${bytes / 1024 / 1024} MB)\n\nลบถาวร กู้คืนไม่ได้")
-                    .setPositiveButton("ลบเลย") { _, _ -> doDelete(dir) }
+                    .setMessage("${dir.absolutePath}\n\nรูปภาพ $imgs รูป\nไฟล์ทั้งหมด $all ไฟล์\n\nลบถาวร กู้คืนไม่ได้")
+                    .setPositiveButton("ลบเลย") { _, _ -> runPurge(listOf(dir.absolutePath)) }
                     .setNegativeButton("ยกเลิก", null).show()
             }
         }.start()
     }
 
-    private fun doDelete(dir: File) {
+    // ค้นหาโฟลเดอร์ชื่อ success และ fail ทั้งหมด แล้วลบทิ้ง (แสดงรายการให้ยืนยันก่อน)
+    private fun deleteAutoFolders(btn: Button) {
+        if (!hasAccess()) { askAccess(); return }
+        val oldText = btn.text
+        btn.text = "⏳ กำลังค้นหา..."
+        btn.isEnabled = false
+        Thread {
+            val found = ArrayList<String>()
+            var err: String? = null
+            var infos: List<String> = emptyList()
+            try {
+                val deadline = System.currentTimeMillis() + 15_000
+                val roots = ArrayList<File>()
+                roots.add(Environment.getExternalStorageDirectory())
+                File("/storage").list()?.filter { it != "emulated" && it != "self" }?.forEach { roots.add(File("/storage/$it")) }
+                for (r in roots) findAuto(r, 0, found, deadline)
+                infos = found.map { val (i, a) = countAll(File(it)); "$it\n   รูป $i | ไฟล์ทั้งหมด $a" }
+            } catch (e: Exception) { err = e.message ?: e.javaClass.simpleName }
+            runOnUiThread {
+                btn.text = oldText
+                btn.isEnabled = true
+                if (err != null) {
+                    AlertDialog.Builder(this).setTitle("ค้นหาไม่สำเร็จ").setMessage(err).setPositiveButton("ตกลง", null).show()
+                } else if (found.isEmpty()) {
+                    AlertDialog.Builder(this).setTitle("ไม่พบโฟลเดอร์")
+                        .setMessage("ไม่พบโฟลเดอร์ชื่อ success หรือ fail").setPositiveButton("ตกลง", null).show()
+                } else {
+                    AlertDialog.Builder(this).setTitle("พบ ${found.size} โฟลเดอร์ ลบทั้งหมดเลยไหม?")
+                        .setMessage(infos.joinToString("\n\n") + "\n\nลบถาวร กู้คืนไม่ได้")
+                        .setPositiveButton("ลบทั้งหมด") { _, _ -> runPurge(found) }
+                        .setNegativeButton("ยกเลิก", null).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun findAuto(dir: File, depth: Int, out: MutableList<String>, deadline: Long) {
+        if (depth > 4 || out.size >= 50 || System.currentTimeMillis() > deadline) return
+        val names = dir.list() ?: return
+        for (nm in names) {
+            if (nm.contains('.') || nm == "Android") continue
+            val d = File(dir, nm)
+            if (!d.isDirectory) continue
+            if (nm.lowercase() in autoNames) {
+                if (!isProtected(d) && d.absolutePath !in out) out.add(d.absolutePath)
+                continue
+            }
+            findAuto(d, depth + 1, out, deadline)
+        }
+    }
+
+    // ลบโฟลเดอร์ตามรายการ (ไม่สั่งสแกนแกลเลอรี เพื่อความเร็ว) แล้วบอกจำนวนและเวลาที่ใช้
+    private fun runPurge(paths: List<String>) {
         val wait = AlertDialog.Builder(this).setMessage("กำลังลบ ... อย่าปิดแอป (ไฟล์เยอะอาจใช้เวลาสักครู่)").setCancelable(false).create()
         wait.show()
         Thread {
-            val paths = dir.walkTopDown().filter { it.isFile }.map { it.absolutePath }.toList()
-            dir.deleteRecursively()
-            val left = if (dir.exists()) dir.walkTopDown().count { it.isFile } else 0
-            if (paths.isNotEmpty()) MediaScannerConnection.scanFile(this, paths.toTypedArray(), null, null)
+            val t0 = System.currentTimeMillis()
+            val st = LongArray(4)   // [0]=ไฟล์ที่ลบ [1]=รูปที่ลบ [2]=ลบไม่ได้ [3]=โฟลเดอร์ที่ลบไม่หมด
+            for (path in paths) purge(File(path), st)
+            val p = getSharedPreferences("cfg", MODE_PRIVATE)
+            p.edit().putLong("totDel", p.getLong("totDel", 0) + st[1])
+                .putLong("totFail", p.getLong("totFail", 0) + st[2]).apply()
+            val secs = String.format(java.util.Locale.US, "%.1f", (System.currentTimeMillis() - t0) / 1000.0)
             runOnUiThread {
                 try { wait.dismiss() } catch (_: Exception) {}
-                val msg = if (!dir.exists()) "ลบโฟลเดอร์เรียบร้อย (${paths.size} ไฟล์)"
-                else "ลบไม่หมด เหลือ $left ไฟล์ (ลบแล้ว ${paths.size - left})"
+                val msg = "ลบแล้ว ${st[0]} ไฟล์ (เป็นรูป ${st[1]})\nลบไม่ได้ ${st[2]} ไฟล์\nใช้เวลา $secs วินาที" +
+                    (if (st[3] > 0) "\nมี ${st[3]} โฟลเดอร์ที่ลบไม่หมด" else "")
                 AlertDialog.Builder(this).setTitle("ผลการลบ").setMessage(msg).setPositiveButton("ตกลง", null).show()
             }
         }.start()
+    }
+
+    private fun purge(dir: File, st: LongArray) {
+        val names = dir.list() ?: return
+        for (nm in names) {
+            val f = File(dir, nm)
+            if (!nm.contains('.') && f.isDirectory) { purge(f, st); continue }
+            if (f.delete()) {
+                st[0]++
+                if (nm.substringAfterLast('.', "").lowercase() in exts) st[1]++
+            } else if (f.isDirectory) purge(f, st) else st[2]++
+        }
+        if (!dir.delete()) st[3]++
+    }
+
+    // นับรูป/ไฟล์ทั้งหมดจากรายชื่อไฟล์อย่างเดียว (ไม่อ่านรายละเอียดทีละไฟล์ จึงเร็ว)
+    private fun countAll(d: File): Pair<Int, Int> {
+        var imgs = 0; var all = 0
+        val names = d.list() ?: return Pair(0, 0)
+        for (nm in names) {
+            if (nm.contains('.')) {
+                all++
+                if (nm.substringAfterLast('.', "").lowercase() in exts) imgs++
+            } else {
+                val f = File(d, nm)
+                if (f.isDirectory) { val (i, a) = countAll(f); imgs += i; all += a } else all++
+            }
+        }
+        return Pair(imgs, all)
     }
 
     private fun isProtected(d: File): Boolean {
